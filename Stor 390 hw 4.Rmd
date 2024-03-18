@@ -1,0 +1,190 @@
+---
+title: "HW 4"
+author: "Eric Rash"
+date: "12/29/2023"
+output:
+  pdf_document: default
+  html_document:
+    number_sections: yes
+---
+
+This homework is designed to give you practice fitting a logistic regression and working with statistical/philosophical measures of fairness.  We will work with the `titanic` dataset which we have previously seen in class in connection to decision trees.  
+
+Below I will preprocess the data precisely as we did in class.  You can simply refer to `data_train` as your training data and `data_test` as your testing data.  
+
+
+
+
+```{r}
+
+#this is all of the preprocessing done for the decision trees lecture.  
+
+path <- 'https://raw.githubusercontent.com/guru99-edu/R-Programming/master/titanic_data.csv'
+titanic <-read.csv(path)
+head(titanic)
+
+library(dplyr)
+
+#replace ? with NA
+replace_question_mark <- function(x) {
+  if (is.character(x)) {
+    x <- na_if(x, "?")
+  }
+  return(x)
+}
+
+titanic <- titanic %>%
+  mutate_all(replace_question_mark)
+
+set.seed(678)
+shuffle_index <- sample(1:nrow(titanic))
+head(shuffle_index)
+
+titanic <- titanic[shuffle_index, ]
+head(titanic)
+
+library(dplyr)
+# Drop variables
+clean_titanic <- titanic %>%
+select(-c(home.dest, cabin, name, x, ticket)) %>% 
+#Convert to factor level
+    mutate(pclass = factor(pclass, levels = c(1, 2, 3), labels = c('Upper', 'Middle', 'Lower')),
+    survived = factor(survived, levels = c(0, 1), labels = c('No', 'Yes'))) %>%
+na.omit()
+#previously were characters
+clean_titanic$age <- as.numeric(clean_titanic$age)
+clean_titanic$fare <- as.numeric(clean_titanic$fare)
+glimpse(clean_titanic)
+
+create_train_test <- function(data, size = 0.8, train = TRUE) {
+    n_row = nrow(data)
+    total_row = size * n_row
+    train_sample <- 1: total_row
+    if (train == TRUE) {
+        return (data[train_sample, ])
+    } else {
+        return (data[-train_sample, ])
+    }
+}
+data_train <- create_train_test(clean_titanic, 0.8, train = TRUE)
+data_test <- create_train_test(clean_titanic, 0.8, train = FALSE)
+
+```
+
+#
+Create a table reporting the proportion of people in the training set surviving the Titanic.  Do the same for the testing set.  Comment on whether the current training-testing partition looks suitable.  
+
+```{r}
+#calculates survival rates for train and test data
+test_survival_rate <- (sum(data_test$survived == "Yes"))/(nrow(data_test))
+train_survival_rate <- (sum(data_train$survived == "Yes"))/(nrow(data_train))
+##makes prop table of survival rates
+proportion_table <- data.frame(
+  Set = c("Training", "Testing"),
+  Proportion_of_Survivors = c(train_survival_rate, test_survival_rate)
+)
+proportion_table
+```
+
+*student input*
+
+#
+Use the `glm` command to build a logistic regression on the training partition.  `survived` should be your response variable and `pclass`, `sex`, `age`, `sibsp`, and `parch` should be your response variables.  
+
+```{r}
+##Builds a logistic model on training data
+model <- glm(survived ~pclass + age + sibsp + parch,family=binomial(link='logit'),data=data_train)
+summary(model)
+```
+
+We would now like to test whether this classifier is *fair* across the sex subgroups.  It was reported that women and children were prioritized on the life-boats and as a result survived the incident at a much higher rate.  Let us see if our model is able to capture this fact.  
+
+#
+
+Subset your test data into a male group and a female group.  Then, use the `predict` function on the male testing group to come up with predicted probabilities of surviving the Titanic for each male in the testing set.  Do the same for the female testing group.  
+
+```{r}
+#subsets the data into male and female groups
+m_split <- subset(data_test, sex=="male")
+f_split <- subset(data_test, sex=="female")
+#calculates individual likelihood of surviving
+m.fitted.results <- predict(model,newdata=m_split,type='response')
+f.fitted.results <- predict(model, newdata=f_split, type="response")
+##adds column with predicted outcomes
+m_split$prediction <-m.fitted.results
+f_split$prediction <-f.fitted.results
+```
+
+# 
+
+Now recall that for this logistic *regression* to be a true classifier, we need to pair it with a decision boundary.  Use an `if-else` statement to translate any predicted probability in the male group greater than $0.5$ into `Yes` (as in Yes this individual is predicted to have survived).  Likewise an predicted probability less than $0.5$ should be translated into a `No`.  
+
+Do this for the female testing group as well, and then create a confusion matrix for each of the male and female test set predictions.  You can use the `confusionMatrix` command as seen in class to expidite this process as well as provide you necessary metrics for the following questions.  
+
+```{r}
+library(caret)
+#creates a decision boundary of 0.5 for if ind is predicted to survive or not
+m.surv <- ifelse(m.fitted.results > 0.5,"Yes","No")
+f.surv <- ifelse(f.fitted.results > 0.5, "Yes", "No")
+##adds columns with classifications
+m_split$predict_surv <- m.surv
+f_split$predict_surv <- f.surv
+##creates confusion  matrices
+confusionMatrix(as.factor(m.surv),reference=m_split$survived, positive = "Yes")
+confusionMatrix(as.factor(f.surv),reference=f_split$survived, positive = "Yes")
+```
+
+#
+We can see that indeed, at least within the testing groups, women did seem to survive at a higher proportion than men (24.8\% to 76.3\% in the testing set).  Print a summary of your trained model and interpret one of the fitted coefficients in light of the above disparity.  
+
+```{r}
+#student input
+summary(model)
+```
+
+Keeping in mind what we know about the disparity in predicted survival rates between males and females on the Titanic we can look at the "parch" variable. The coefficient on this variable is 0.345236, which tells us that for every child a person has there is a small positive impact on your log-likelihood of surviving the wreck.
+
+
+#
+
+Now let's see if our model is *fair* across this explanatory variable.  Calculate five measures (as defined in class) in this question: the Overall accuracy rate ratio between females and males, the disparate impact between females and males, the statistical parity between females and males, and the predictive equality as well as equal opportunity between females and males (collectively these last two comprise equalized odds).  Set a reasonable $\epsilon$ each time and then comment on which (if any) of these five criteria are met.  
+
+
+```{r}
+#OARR
+f_pv_acc <-(38+19)/(38+19+23)
+m_pv_acc <-(26+11)/(26+11+21+21)
+OARR <- f_pv_acc / m_pv_acc
+#DI
+f_di <- 19/(38+19+23)
+m_di <-(76+21)/(76+21+21+11)
+DI <- f_di/m_di
+#SP
+SP <- f_di-m_di
+#PE
+f_pe <-(19+38)/19
+m_pe <- (76+11)/(76+21)
+PE <- f_pe - m_pe
+##EO
+f_eo <- (19+38+23-19)/(19+38+23-19-38)
+m_eo <- (76+21+21+11-76-21)/(76+21+21+11-76-11)
+EO <- f_eo/m_eo
+
+
+cat("Overall Accuracy Rate Ratio (OARR): ", OARR, "\n")
+cat("Disparate Impact (DI): ", DI, "\n")
+cat("Statistical Parity (SP): ", SP, "\n")
+cat("Predictive Equality (PE): ", PE, "\n")
+cat("Equal Opportunity (EO): ", EO, "\n")
+```
+
+With an epsilon of 0.05, there are no measures of statistical fairness that would approve of our model. 
+
+It is always important for us to interpret our results in light of the original data and the context of the analysis.  In this case, it is relevant that we are analyzing a historical event post-facto and any disparities across demographics identified are unlikely to be replicated.  So even though our model fails numerous of the statistical fairness criteria, I would argue we need not worry that our model could be misused to perpetuate discrimination in the future.  After all, this model is likely not being used to prescribe a preferred method of treatment in the future.  
+
+
+#
+
+Even so, provide a *philosophical* notion of justice or fairness that may have motivated the Titanic survivors to act as they did. Spell out what this philosophical notion or principle entails?
+
+The thought process of those on the Titanic may have been reflective of those stated by Utilitarians. The idea being that you could maximize future happiness by protecting those who would likely live longer/those who have the ability to have kids and promote future generations. The utilitarian calculus here would argue that children who will live longer have more opportunity to benefit society than an old man. 
